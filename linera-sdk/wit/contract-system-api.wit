@@ -41,8 +41,7 @@ interface contract-system-api {
     }
 
     record application-id {
-        bytecode-id: bytecode-id,
-        creation: message-id,
+        application-description-hash: crypto-hash,
     }
 
     record application-permissions {
@@ -53,11 +52,6 @@ interface contract-system-api {
 
     record block-height {
         inner0: u64,
-    }
-
-    record bytecode-id {
-        contract-blob-hash: crypto-hash,
-        service-blob-hash: crypto-hash,
     }
 
     record chain-id {

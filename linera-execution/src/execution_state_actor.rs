@@ -11,8 +11,8 @@ use futures::channel::mpsc;
 #[cfg(with_metrics)]
 use linera_base::prometheus_util::{self, MeasureLatency as _};
 use linera_base::{
-    data_types::{Amount, ApplicationPermissions, BlobContent, Timestamp},
-    identifiers::{Account, BlobId, MessageId, Owner},
+    data_types::{Amount, ApplicationPermissions, Blob, BlobContent, Timestamp},
+    identifiers::{Account, BlobId, BlobType, MessageId, Owner},
     ownership::ChainOwnership,
 };
 use linera_views::{batch::Batch, context::Context, views::View};
@@ -73,10 +73,26 @@ where
     ) -> Result<(), ExecutionError> {
         use ExecutionRequest::*;
         match request {
-            LoadContract { id, callback } => {
+            LoadContract {
+                id,
+                pending_application_blob,
+                callback,
+            } => {
                 #[cfg(with_metrics)]
                 let _latency = LOAD_CONTRACT_LATENCY.measure_latency();
-                let description = self.system.registry.describe_application(id).await?;
+                let blob = if let Some(blob) = pending_application_blob {
+                    blob
+                } else {
+                    let blob_id = BlobId::new(
+                        id.application_description_hash,
+                        BlobType::ApplicationDescription,
+                    );
+                    self.context().extra().get_blob(blob_id).await?
+                };
+                let description = blob
+                    .into_inner_application_description()
+                    .expect("Should be an application description Blob!");
+
                 let code = self
                     .context()
                     .extra()
@@ -88,7 +104,17 @@ where
             LoadService { id, callback } => {
                 #[cfg(with_metrics)]
                 let _latency = LOAD_SERVICE_LATENCY.measure_latency();
-                let description = self.system.registry.describe_application(id).await?;
+                let blob_id = BlobId::new(
+                    id.application_description_hash,
+                    BlobType::ApplicationDescription,
+                );
+                let description = self
+                    .context()
+                    .extra()
+                    .get_blob(blob_id)
+                    .await?
+                    .into_inner_application_description()
+                    .expect("Should be an application description Blob!");
                 let code = self
                     .context()
                     .extra()
@@ -329,6 +355,7 @@ where
 pub enum ExecutionRequest {
     LoadContract {
         id: UserApplicationId,
+        pending_application_blob: Option<Blob>,
         callback: Sender<(UserContractCode, UserApplicationDescription)>,
     },
 
@@ -459,9 +486,14 @@ pub enum ExecutionRequest {
 impl Debug for ExecutionRequest {
     fn fmt(&self, formatter: &mut Formatter) -> fmt::Result {
         match self {
-            ExecutionRequest::LoadContract { id, .. } => formatter
+            ExecutionRequest::LoadContract {
+                id,
+                pending_application_blob,
+                ..
+            } => formatter
                 .debug_struct("ExecutionRequest::LoadContract")
                 .field("id", id)
+                .field("pending_application_blob", pending_application_blob)
                 .finish_non_exhaustive(),
 
             ExecutionRequest::LoadService { id, .. } => formatter

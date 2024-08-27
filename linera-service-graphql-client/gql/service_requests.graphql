@@ -203,6 +203,14 @@ query Chain(
   }
 }
 
+query Application($appId: ApplicationId!) {
+  application(appId: $appId) {
+    id
+    link
+    description
+  }
+}
+
 query Applications($chainId: ChainId!) {
   applications(chainId: $chainId) {
     id

@@ -1,12 +1,13 @@
 // Copyright (c) Zefchain Labs, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-use std::vec;
+use std::{collections::BTreeMap, sync::Arc, vec};
 
 use linera_base::{
-    data_types::{Amount, ArithmeticError, OracleResponse},
+    crypto::CryptoHash,
+    data_types::{Amount, ArithmeticError, Blob, OracleResponse},
     ensure,
-    identifiers::ApplicationId,
+    identifiers::{ApplicationId, BlobId, BlobType},
 };
 
 use crate::{
@@ -21,16 +22,34 @@ pub struct TransactionTracker {
     oracle_responses: Vec<OracleResponse>,
     outcomes: Vec<ExecutionOutcome>,
     next_message_index: u32,
+    pending_application_blobs: Arc<BTreeMap<BlobId, Blob>>,
 }
 
 impl TransactionTracker {
-    pub fn new(next_message_index: u32, oracle_responses: Option<Vec<OracleResponse>>) -> Self {
+    pub fn new(
+        next_message_index: u32,
+        oracle_responses: Option<Vec<OracleResponse>>,
+        pending_application_blobs: Arc<BTreeMap<BlobId, Blob>>,
+    ) -> Self {
         TransactionTracker {
             replaying_oracle_responses: oracle_responses.map(Vec::into_iter),
             next_message_index,
             oracle_responses: Vec::new(),
             outcomes: Vec::new(),
+            pending_application_blobs,
         }
+    }
+
+    pub fn get_pending_application_blob(
+        &self,
+        application_description_hash: CryptoHash,
+    ) -> Option<Blob> {
+        self.pending_application_blobs
+            .get(&BlobId::new(
+                application_description_hash,
+                BlobType::ApplicationDescription,
+            ))
+            .cloned()
     }
 
     pub fn next_message_index(&self) -> u32 {
@@ -116,6 +135,7 @@ impl TransactionTracker {
             oracle_responses,
             outcomes,
             next_message_index,
+            pending_application_blobs: _pending_blobs,
         } = self;
         if let Some(mut responses) = replaying_oracle_responses {
             ensure!(
@@ -124,9 +144,5 @@ impl TransactionTracker {
             );
         }
         Ok((outcomes, oracle_responses, next_message_index))
-    }
-
-    pub(crate) fn outcomes_mut(&mut self) -> &mut Vec<ExecutionOutcome> {
-        &mut self.outcomes
     }
 }

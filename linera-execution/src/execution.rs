@@ -1,12 +1,9 @@
 // Copyright (c) Zefchain Labs, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-use std::{
-    collections::{BTreeMap, BTreeSet, HashMap},
-    mem, vec,
-};
+use std::mem;
 
-use futures::{stream::FuturesUnordered, FutureExt, StreamExt, TryStreamExt};
+use futures::{FutureExt, StreamExt};
 use linera_base::{
     data_types::{Amount, BlockHeight, Timestamp},
     identifiers::{Account, ChainId, Destination, Owner},
@@ -21,19 +18,21 @@ use linera_views_derive::CryptoHashView;
 #[cfg(with_testing)]
 use {
     crate::{
-        ResourceControlPolicy, ResourceTracker, TestExecutionRuntimeContext, UserContractCode,
+        ResourceControlPolicy, ResourceTracker, TestExecutionRuntimeContext,
+        UserApplicationDescription, UserContractCode,
     },
+    linera_base::data_types::Blob,
     linera_views::context::MemoryContext,
-    std::sync::Arc,
+    std::{collections::BTreeMap, sync::Arc},
 };
 
 use super::{runtime::ServiceRuntimeRequest, ExecutionRequest};
 use crate::{
     resources::ResourceController, system::SystemExecutionStateView, ContractSyncRuntime,
-    ExecutionError, ExecutionOutcome, ExecutionRuntimeConfig, ExecutionRuntimeContext, Message,
-    MessageContext, MessageKind, Operation, OperationContext, Query, QueryContext,
-    RawExecutionOutcome, RawOutgoingMessage, Response, ServiceSyncRuntime, SystemMessage,
-    TransactionTracker, UserApplicationDescription, UserApplicationId,
+    ExecutionError, ExecutionRuntimeConfig, ExecutionRuntimeContext, Message, MessageContext,
+    MessageKind, Operation, OperationContext, Query, QueryContext, RawExecutionOutcome,
+    RawOutgoingMessage, Response, ServiceSyncRuntime, SystemMessage, TransactionTracker,
+    UserApplicationId,
 };
 
 /// A view accessing the execution state of a chain.
@@ -66,28 +65,28 @@ where
         application_description: UserApplicationDescription,
         instantiation_argument: Vec<u8>,
     ) -> Result<(), ExecutionError> {
-        let chain_id = application_description.creation.chain_id;
+        let chain_id = application_description.creator_chain_id;
         let context = OperationContext {
             chain_id,
             authenticated_signer: None,
             authenticated_caller_id: None,
-            height: application_description.creation.height,
+            height: application_description.block_height,
             index: Some(0),
         };
 
         let action = UserAction::Instantiate(context, instantiation_argument);
-        let next_message_index = application_description.creation.index + 1;
-
-        let application_id = self
-            .system
-            .registry
-            .register_application(application_description)
-            .await?;
+        let application_id = UserApplicationId::from(&application_description);
+        let blob = Blob::new_application_description(application_description)?;
 
         self.context()
             .extra()
             .user_contracts()
             .insert(application_id, contract);
+
+        self.context()
+            .extra()
+            .blobs()
+            .insert(blob.id(), blob.clone());
 
         let tracker = ResourceTracker::default();
         let policy = ResourceControlPolicy::default();
@@ -96,7 +95,11 @@ where
             tracker,
             account: None,
         };
-        let mut txn_tracker = TransactionTracker::new(next_message_index, None);
+
+        let mut pending_application_blobs = BTreeMap::new();
+        pending_application_blobs.insert(blob.id(), blob);
+
+        let mut txn_tracker = TransactionTracker::new(0, None, Arc::new(pending_application_blobs));
         self.run_user_action(
             application_id,
             chain_id,
@@ -108,8 +111,6 @@ where
             &mut resource_controller,
         )
         .await?;
-        self.update_execution_outcomes_with_app_registrations(&mut txn_tracker)
-            .await?;
         Ok(())
     }
 }
@@ -222,75 +223,6 @@ where
         Ok(())
     }
 
-    /// Schedules application registration messages when needed.
-    ///
-    /// Ensures that the outgoing messages in `results` are preceded by a system message that
-    /// registers the application that will handle the messages.
-    pub async fn update_execution_outcomes_with_app_registrations(
-        &self,
-        txn_tracker: &mut TransactionTracker,
-    ) -> Result<(), ExecutionError> {
-        let results = txn_tracker.outcomes_mut();
-        let user_application_outcomes = results.iter().filter_map(|outcome| match outcome {
-            ExecutionOutcome::User(application_id, result) => Some((application_id, result)),
-            _ => None,
-        });
-
-        let mut applications_to_register_per_destination = BTreeMap::<_, BTreeSet<_>>::new();
-
-        for (application_id, result) in user_application_outcomes {
-            for message in &result.messages {
-                applications_to_register_per_destination
-                    .entry(&message.destination)
-                    .or_default()
-                    .insert(*application_id);
-            }
-        }
-
-        if applications_to_register_per_destination.is_empty() {
-            return Ok(());
-        }
-
-        let messages = applications_to_register_per_destination
-            .into_iter()
-            .map(|(destination, applications_to_describe)| async {
-                let applications = self
-                    .system
-                    .registry
-                    .describe_applications_with_dependencies(
-                        applications_to_describe.into_iter().collect(),
-                        &HashMap::new(),
-                    )
-                    .await?;
-
-                Ok::<_, ExecutionError>(RawOutgoingMessage {
-                    destination: destination.clone(),
-                    authenticated: false,
-                    grant: Amount::ZERO,
-                    kind: MessageKind::Simple,
-                    message: SystemMessage::RegisterApplications { applications },
-                })
-            })
-            .collect::<FuturesUnordered<_>>()
-            .try_collect::<Vec<_>>()
-            .await?;
-
-        let system_outcome = RawExecutionOutcome {
-            messages,
-            ..RawExecutionOutcome::default()
-        };
-
-        // Insert the message before the first user outcome.
-        let index = results
-            .iter()
-            .position(|outcome| matches!(outcome, ExecutionOutcome::User(_, _)))
-            .unwrap_or(results.len());
-        // TODO(#2362): This inserts messages in front of existing ones, invalidating their IDs.
-        results.insert(index, ExecutionOutcome::System(system_outcome));
-
-        Ok(())
-    }
-
     pub async fn execute_operation(
         &mut self,
         context: OperationContext,
@@ -353,10 +285,7 @@ where
         assert_eq!(context.chain_id, self.context().extra().chain_id());
         match message {
             Message::System(message) => {
-                let outcome = self
-                    .system
-                    .execute_message(context, message, txn_tracker)
-                    .await?;
+                let outcome = self.system.execute_message(context, message).await?;
                 txn_tracker.add_system_outcome(outcome)?;
             }
             Message::User {
@@ -542,20 +471,5 @@ where
                 }
             }
         }
-    }
-
-    pub async fn list_applications(
-        &self,
-    ) -> Result<Vec<(UserApplicationId, UserApplicationDescription)>, ExecutionError> {
-        let mut applications = vec![];
-        for index in self.system.registry.known_applications.indices().await? {
-            let application_description =
-                self.system.registry.known_applications.get(&index).await?;
-
-            if let Some(application_description) = application_description {
-                applications.push((index, application_description));
-            }
-        }
-        Ok(applications)
     }
 }

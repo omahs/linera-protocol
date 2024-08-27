@@ -14,9 +14,9 @@ use std::{
 
 use linera_base::{
     crypto::CryptoHash,
-    data_types::{Blob, BlockHeight, UserApplicationDescription},
+    data_types::{Blob, BlockHeight},
     ensure,
-    identifiers::{BlobId, ChainId, UserApplicationId},
+    identifiers::{BlobId, ChainId},
 };
 use linera_chain::{
     data_types::{
@@ -159,17 +159,6 @@ where
         ChainWorkerStateWithTemporaryChanges::new(self)
             .await
             .query_application(query)
-            .await
-    }
-
-    /// Returns an application's description.
-    pub(super) async fn describe_application(
-        &mut self,
-        application_id: UserApplicationId,
-    ) -> Result<UserApplicationDescription, WorkerError> {
-        ChainWorkerStateWithTemporaryChanges::new(self)
-            .await
-            .describe_application(application_id)
             .await
     }
 
@@ -352,13 +341,20 @@ where
             self.recent_blobs.try_get_many(blob_ids).await;
 
         let mut blobs = found_blobs.into_values().collect::<Vec<_>>();
+        let mut missing_blobs = Vec::new();
         for blob_id in not_found_blobs {
             if let Some(blob) = pending_blobs.get(&blob_id) {
                 blobs.push(blob.clone());
+            } else {
+                missing_blobs.push(blob_id);
             }
         }
 
-        Ok(blobs)
+        if missing_blobs.is_empty() {
+            Ok(blobs)
+        } else {
+            Err(WorkerError::BlobsNotFound(missing_blobs))
+        }
     }
 
     /// Inserts a [`Blob`] into the worker's cache.

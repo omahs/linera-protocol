@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use std::{
-    collections::HashMap,
     env,
     marker::PhantomData,
     mem,
@@ -359,25 +358,6 @@ impl ClientWrapper {
         }
         let stdout = command.spawn_and_wait_for_stdout().await?;
         Ok(stdout.trim().parse::<ApplicationId>()?.with_abi())
-    }
-
-    /// Runs `linera request-application`
-    pub async fn request_application(
-        &self,
-        application_id: ApplicationId,
-        requester_chain_id: ChainId,
-        target_chain_id: Option<ChainId>,
-    ) -> Result<BytecodeId> {
-        let mut command = self.command().await?;
-        command
-            .arg("request-application")
-            .arg(application_id.to_string())
-            .args(["--requester-chain-id", &requester_chain_id.to_string()]);
-        if let Some(target_chain_id) = target_chain_id {
-            command.args(["--target-chain-id", &target_chain_id.to_string()]);
-        }
-        let stdout = command.spawn_and_wait_for_stdout().await?;
-        Ok(stdout.trim().parse()?)
     }
 
     /// Runs `linera service`.
@@ -922,36 +902,25 @@ impl NodeService {
         chain_id: &ChainId,
         application_id: &ApplicationId<A>,
     ) -> Result<ApplicationWrapper<A>> {
-        let application_id = application_id.forget_abi().to_string();
-        let values = self.try_get_applications_uri(chain_id).await?;
-        let Some(link) = values.get(&application_id) else {
-            bail!("Could not find application URI: {application_id}");
-        };
-        Ok(ApplicationWrapper::from(link.to_string()))
+        let link = self
+            .try_get_application_uri(chain_id, &application_id.forget_abi())
+            .await?;
+        Ok(ApplicationWrapper::from(link))
     }
 
-    pub async fn try_get_applications_uri(
+    pub async fn try_get_application_uri(
         &self,
         chain_id: &ChainId,
-    ) -> Result<HashMap<String, String>> {
-        let query = format!("query {{ applications(chainId: \"{chain_id}\") {{ id link }}}}");
+        app_id: &ApplicationId,
+    ) -> Result<String> {
+        let query = format!(
+            "query {{ application(chainId: \"{chain_id}\", appId: \"{app_id}\") {{ link }}}}"
+        );
         let data = self.query_node(query).await?;
-        data["applications"]
-            .as_array()
-            .context("missing applications in response")?
-            .iter()
-            .map(|a| {
-                let id = a["id"]
-                    .as_str()
-                    .context("missing id field in response")?
-                    .to_string();
-                let link = a["link"]
-                    .as_str()
-                    .context("missing link field in response")?
-                    .to_string();
-                Ok((id, link))
-            })
-            .collect()
+        Ok(data["application"]["link"]
+            .as_str()
+            .context("missing link field in response")?
+            .to_string())
     }
 
     pub async fn publish_data_blob(
@@ -1081,23 +1050,6 @@ impl NodeService {
             .parse::<ApplicationId>()
             .context("invalid application ID")?
             .with_abi())
-    }
-
-    pub async fn request_application<A: ContractAbi>(
-        &self,
-        chain_id: &ChainId,
-        application_id: &ApplicationId<A>,
-    ) -> Result<String> {
-        let application_id = application_id.forget_abi();
-        let query = format!(
-            "mutation {{ requestApplication(\
-                 chainId: \"{chain_id}\", \
-                 applicationId: \"{application_id}\") \
-             }}"
-        );
-        let data = self.query_node(query).await?;
-        serde_json::from_value(data["requestApplication"].clone())
-            .context("missing requestApplication field in response")
     }
 
     pub async fn subscribe(

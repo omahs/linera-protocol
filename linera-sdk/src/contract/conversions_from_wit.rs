@@ -6,7 +6,7 @@
 use linera_base::{
     crypto::{CryptoHash, PublicKey},
     data_types::{Amount, BlockHeight, TimeDelta, Timestamp},
-    identifiers::{ApplicationId, BytecodeId, ChainId, MessageId, Owner},
+    identifiers::{ApplicationId, ChainId, MessageId, Owner},
     ownership::{ChainOwnership, CloseChainError, TimeoutConfig},
 };
 
@@ -30,19 +30,7 @@ impl From<wit_system_api::MessageId> for MessageId {
 
 impl From<wit_system_api::ApplicationId> for ApplicationId {
     fn from(application_id: wit_system_api::ApplicationId) -> Self {
-        ApplicationId {
-            bytecode_id: application_id.bytecode_id.into(),
-            creation: application_id.creation.into(),
-        }
-    }
-}
-
-impl From<wit_system_api::BytecodeId> for BytecodeId {
-    fn from(bytecode_id: wit_system_api::BytecodeId) -> Self {
-        BytecodeId::new(
-            bytecode_id.contract_blob_hash.into(),
-            bytecode_id.service_blob_hash.into(),
-        )
+        ApplicationId::new(application_id.application_description_hash.into())
     }
 }
 

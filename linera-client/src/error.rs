@@ -24,6 +24,8 @@ pub(crate) enum Inner {
     NonexistentKeypair(linera_base::identifiers::ChainId),
     #[error("error on the local node: {0}")]
     LocalNode(#[from] linera_core::local_node::LocalNodeError),
+    #[error("no chain clients found!")]
+    NoChainClientsFound,
 }
 
 thiserror_context::impl_context!(Error(Inner));

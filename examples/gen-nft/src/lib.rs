@@ -110,6 +110,9 @@ Type each of these in the GraphiQL interface and substitute the env variables wi
     }
 ```
 
+Whenever we run a query or a mutation, the result of it gets stored in a `QUERY_RESULT` bash variable.
+We can use that to programatically get the returned `tokenId`.
+
 ```bash
 TOKEN_ID=$(echo "$QUERY_RESULT" | jq -r '.ownedNfts[].tokenId')
 ```

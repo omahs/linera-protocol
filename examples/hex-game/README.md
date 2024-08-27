@@ -112,13 +112,15 @@ query {
 }
 ```
 
+Whenever we run a query or a mutation, the result of it gets stored in a `QUERY_RESULT` bash variable.
+We can use that to programatically get the returned `chainId` and `messageId`.
 Using the message ID, we can assign the new chain to the key in each wallet:
 
 ```bash
 kill %% && sleep 1    # Kill the service so we can use CLI commands for wallet 0.
 
-HEX_CHAIN=ae41b40b288a1e7ed064e2ff749a9ce3e780a5742dca074e6015e77e9dd373f8
-MESSAGE_ID=e476187f6ddfeb9d588c7b45d3df334d5501d6499b3f9ad5595cae86cce16a65040000000000000000000000
+HEX_CHAIN=$(echo "$QUERY_RESULT" | jq -r '.gameChains.entry.value[0].chainId')
+MESSAGE_ID=$(echo "$QUERY_RESULT" | jq -r '.gameChains.entry.value[0].messageId')
 
 linera -w0 assign --key $PUB_KEY_1 --message-id $MESSAGE_ID
 linera -w1 assign --key $PUB_KEY_2 --message-id $MESSAGE_ID

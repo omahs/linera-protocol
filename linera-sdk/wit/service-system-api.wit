@@ -25,17 +25,11 @@ interface service-system-api {
     }
 
     record application-id {
-        bytecode-id: bytecode-id,
-        creation: message-id,
+        application-description-hash: crypto-hash,
     }
 
     record block-height {
         inner0: u64,
-    }
-
-    record bytecode-id {
-        contract-blob-hash: crypto-hash,
-        service-blob-hash: crypto-hash,
     }
 
     record chain-id {
@@ -55,12 +49,6 @@ interface service-system-api {
         info,
         debug,
         trace,
-    }
-
-    record message-id {
-        chain-id: chain-id,
-        height: block-height,
-        index: u32,
     }
 
     record owner {

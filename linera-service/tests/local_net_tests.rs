@@ -10,16 +10,18 @@
 
 mod common;
 
-use std::{env, path::PathBuf, time::Duration};
+use std::{env, path::PathBuf, str::FromStr, time::Duration};
 
 use anyhow::Result;
 use common::INTEGRATION_TEST_GUARD;
 #[cfg(feature = "benchmark")]
 use linera_base::identifiers::AccountOwner;
 use linera_base::{
+    crypto::CryptoHash,
     data_types::Amount,
     identifiers::{Account, ChainId},
 };
+use linera_sdk::base::ApplicationId;
 use linera_service::{
     cli_wrappers::{
         local_net::{get_node_port, Database, LocalNetConfig, PathProvider, ProcessInbox},
@@ -346,7 +348,7 @@ async fn test_project_publish(database: Database, network: Network) -> Result<()
     let tmp_dir = client.project_new("init-test", linera_root).await?;
     let project_dir = tmp_dir.path().join("init-test");
 
-    client
+    let app_id = client
         .project_publish(project_dir, vec![], None, &())
         .await?;
     let chain = client.load_wallet()?.default_chain().unwrap();
@@ -354,10 +356,12 @@ async fn test_project_publish(database: Database, network: Network) -> Result<()
     let port = get_node_port().await;
     let node_service = client.run_node_service(port, ProcessInbox::Skip).await?;
 
-    assert_eq!(
-        node_service.try_get_applications_uri(&chain).await?.len(),
-        1
-    );
+    node_service
+        .try_get_application_uri(
+            &chain,
+            &ApplicationId::new(CryptoHash::from_str(&app_id).unwrap()),
+        )
+        .await?;
 
     net.ensure_is_running().await?;
     net.terminate().await?;
@@ -381,7 +385,7 @@ async fn test_example_publish(database: Database, network: Network) -> Result<()
     let (mut net, client) = config.instantiate().await?;
 
     let example_dir = ClientWrapper::example_path("counter")?;
-    client
+    let app_id = client
         .project_publish(example_dir, vec![], None, &0)
         .await?;
     let chain = client.load_wallet()?.default_chain().unwrap();
@@ -389,10 +393,12 @@ async fn test_example_publish(database: Database, network: Network) -> Result<()
     let port = get_node_port().await;
     let node_service = client.run_node_service(port, ProcessInbox::Skip).await?;
 
-    assert_eq!(
-        node_service.try_get_applications_uri(&chain).await?.len(),
-        1
-    );
+    node_service
+        .try_get_application_uri(
+            &chain,
+            &ApplicationId::new(CryptoHash::from_str(&app_id).unwrap()),
+        )
+        .await?;
 
     net.ensure_is_running().await?;
     net.terminate().await?;

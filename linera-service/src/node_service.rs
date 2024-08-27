@@ -13,17 +13,17 @@ use async_graphql::{
 use async_graphql_axum::{GraphQLRequest, GraphQLResponse, GraphQLSubscription};
 use axum::{extract::Path, http::StatusCode, response, response::IntoResponse, Extension, Router};
 use futures::{
-    future::{self},
+    future::{self, try_join_all},
     lock::Mutex,
     Future,
 };
 use linera_base::{
     crypto::{CryptoError, CryptoHash, PublicKey},
     data_types::{
-        Amount, ApplicationPermissions, BlobBytes, Bytecode, TimeDelta, Timestamp,
+        Amount, ApplicationPermissions, Blob, BlobBytes, Bytecode, TimeDelta, Timestamp,
         UserApplicationDescription,
     },
-    identifiers::{ApplicationId, BytecodeId, ChainId, Owner, UserApplicationId},
+    identifiers::{ApplicationId, BlobId, BlobType, BytecodeId, ChainId, Owner, UserApplicationId},
     ownership::{ChainOwnership, TimeoutConfig},
     BcsHexParseError,
 };
@@ -659,29 +659,30 @@ where
         })
         .await
     }
+}
 
-    /// Requests a `RegisterApplications` message from another chain so the application can be used
-    /// on this one.
-    async fn request_application(
-        &self,
-        chain_id: ChainId,
-        application_id: UserApplicationId,
-        target_chain_id: Option<ChainId>,
-    ) -> Result<CryptoHash, Error> {
-        loop {
-            let client = self.clients.try_client_lock(&chain_id).await?;
-            let result = client
-                .request_application(application_id, target_chain_id)
-                .await;
-            self.context.lock().await.update_wallet(&client).await?;
-            let timeout = match result? {
-                ClientOutcome::Committed(certificate) => return Ok(certificate.hash()),
-                ClientOutcome::WaitForTimeout(timeout) => timeout,
-            };
-            let mut stream = client.subscribe().await?;
-            drop(client);
-            wait_for_next_round(&mut stream, timeout).await;
-        }
+impl<P, S> QueryRoot<P, S>
+where
+    P: ValidatorNodeProvider + Send + Sync + 'static,
+    S: Storage + Clone + Send + Sync + 'static,
+{
+    async fn get_blob(
+        app_id: &UserApplicationId,
+        client: &ChainClient<P, S>,
+    ) -> Result<Blob, Error> {
+        let blob_id = BlobId::new(
+            app_id.application_description_hash,
+            BlobType::ApplicationDescription,
+        );
+
+        Ok(
+            if let Ok(blob) = client.storage_client().read_blob(blob_id).await {
+                blob
+            } else {
+                client.receive_certificate_for_blob(blob_id).await?;
+                client.storage_client().read_blob(blob_id).await?
+            },
+        )
     }
 }
 
@@ -697,28 +698,49 @@ where
         Ok(ChainStateExtendedView::new(view))
     }
 
-    async fn applications(&self, chain_id: ChainId) -> Result<Vec<ApplicationOverview>, Error> {
-        let client = self.clients.try_client_lock(&chain_id).await?;
-        let applications = client
-            .chain_state_view()
-            .await?
-            .execution_state
-            .list_applications()
-            .await?;
-
-        let overviews = applications
-            .into_iter()
-            .map(|(id, description)| ApplicationOverview::new(id, description, self.port, chain_id))
-            .collect();
-
-        Ok(overviews)
-    }
-
     async fn chains(&self) -> Result<Chains, Error> {
         Ok(Chains {
             list: self.clients.0.lock().await.keys().cloned().collect(),
             default: self.default_chain,
         })
+    }
+
+    async fn application(&self, app_id: UserApplicationId) -> Result<ApplicationOverview, Error> {
+        let client = self.clients.try_lock_random_client().await?;
+        let blob = Self::get_blob(&app_id, &client).await?;
+
+        Ok(ApplicationOverview::new(
+            app_id,
+            blob.into_inner_application_description()
+                .expect("Should be able to get the inner application description!"),
+            self.port,
+            client.chain_id(),
+        ))
+    }
+
+    async fn applications(&self, chain_id: ChainId) -> Result<Vec<ApplicationOverview>, Error> {
+        let client = self.clients.try_client_lock(&chain_id).await?;
+        let application_ids = client
+            .chain_state_view()
+            .await?
+            .execution_state
+            .users
+            .indices()
+            .await?;
+        try_join_all(application_ids.into_iter().map(|id| {
+            let client = client.clone();
+            async move {
+                let blob = Self::get_blob(&id, &client).await?;
+                Ok(ApplicationOverview::new(
+                    id,
+                    blob.into_inner_application_description()
+                        .expect("Should be able to get the inner application description!"),
+                    self.port,
+                    chain_id,
+                ))
+            }
+        }))
+        .await
     }
 
     async fn block(

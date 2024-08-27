@@ -12,7 +12,7 @@ use std::{sync::Arc, thread, vec};
 
 use linera_base::{
     crypto::{BcsSignable, CryptoHash},
-    data_types::BlockHeight,
+    data_types::{Blob, BlockHeight},
     identifiers::{BlobId, BytecodeId, ChainId, MessageId},
 };
 use linera_views::{
@@ -26,8 +26,8 @@ pub use self::{
     system_execution_state::SystemExecutionState,
 };
 use crate::{
-    ApplicationRegistryView, ExecutionRequest, ExecutionRuntimeContext, ExecutionStateView,
-    QueryContext, ServiceRuntimeEndpoint, ServiceRuntimeRequest, ServiceSyncRuntime,
+    execution::ServiceRuntimeEndpoint, ExecutionRequest, ExecutionRuntimeContext,
+    ExecutionStateView, QueryContext, ServiceRuntimeRequest, ServiceSyncRuntime,
     TestExecutionRuntimeContext, UserApplicationDescription, UserApplicationId,
 };
 
@@ -37,11 +37,9 @@ pub fn create_dummy_user_application_description(index: u64) -> UserApplicationD
     let service_blob_hash = CryptoHash::new(&FakeBlob(String::from("service")));
     UserApplicationDescription {
         bytecode_id: BytecodeId::new(contract_blob_hash, service_blob_hash),
-        creation: MessageId {
-            chain_id,
-            height: BlockHeight(index),
-            index: 1,
-        },
+        creator_chain_id: chain_id,
+        block_height: BlockHeight(index),
+        block_effect_counter: 1,
         required_application_ids: vec![],
         parameters: vec![],
     }
@@ -64,42 +62,40 @@ where
     C: Context + Clone + Send + Sync + 'static,
     C::Extra: ExecutionRuntimeContext,
 {
-    let mock_applications: Vec<_> =
-        create_dummy_user_application_registrations(&mut state.system.registry, count)
-            .await?
-            .into_iter()
-            .map(|(id, _description)| (id, MockApplication::default()))
-            .collect();
+    let mock_applications: Vec<_> = create_dummy_user_applications(count)
+        .await?
+        .into_iter()
+        .map(|(id, description)| (id, description, MockApplication::default()))
+        .collect();
     let extra = state.context().extra();
 
-    for (id, mock_application) in &mock_applications {
+    for (id, description, mock_application) in &mock_applications {
         extra
             .user_contracts()
             .insert(*id, Arc::new(mock_application.clone()));
         extra
             .user_services()
             .insert(*id, Arc::new(mock_application.clone()));
+
+        let app_blob = Blob::new_application_description(description.clone())?;
+        extra.blobs().insert(app_blob.id(), app_blob);
     }
 
-    Ok(mock_applications.into_iter())
+    Ok(mock_applications
+        .into_iter()
+        .map(|(id, _, mock_application)| (id, mock_application))
+        .collect::<Vec<_>>()
+        .into_iter())
 }
 
-pub async fn create_dummy_user_application_registrations<C>(
-    registry: &mut ApplicationRegistryView<C>,
+pub async fn create_dummy_user_applications(
     count: u64,
-) -> anyhow::Result<Vec<(UserApplicationId, UserApplicationDescription)>>
-where
-    C: Context + Clone + Send + Sync + 'static,
-{
+) -> anyhow::Result<Vec<(UserApplicationId, UserApplicationDescription)>> {
     let mut ids = Vec::with_capacity(count as usize);
 
     for index in 0..count {
         let description = create_dummy_user_application_description(index);
-        let id = registry.register_application(description.clone()).await?;
-
-        assert_eq!(registry.describe_application(id).await?, description);
-
-        ids.push((id, description));
+        ids.push((UserApplicationId::from(&description), description));
     }
 
     Ok(ids)

@@ -5,7 +5,7 @@
 
 #![allow(clippy::items_after_test_module)]
 
-use std::{sync::Arc, vec};
+use std::{collections::BTreeMap, sync::Arc, vec};
 
 use linera_base::{
     crypto::{CryptoHash, PublicKey},
@@ -194,7 +194,7 @@ async fn test_fee_consumption(
         message_id: MessageId::default(),
     };
     let mut grant = initial_grant.unwrap_or_default();
-    let mut txn_tracker = TransactionTracker::new(0, Some(Vec::new()));
+    let mut txn_tracker = TransactionTracker::new(0, Some(Vec::new()), Arc::new(BTreeMap::new()));
     view.execute_message(
         context,
         Timestamp::from(0),

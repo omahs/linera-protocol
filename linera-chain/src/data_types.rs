@@ -74,6 +74,33 @@ impl Block {
                     BlobId::new(bytecode_id.service_blob_hash, BlobType::ServiceBytecode),
                 ]);
             }
+            if let Operation::System(SystemOperation::CreateApplication {
+                application_id, ..
+            }) = operation
+            {
+                blob_ids.insert(BlobId::new(
+                    application_id.application_description_hash,
+                    BlobType::ApplicationDescription,
+                ));
+            }
+        }
+
+        blob_ids
+    }
+
+    /// Returns all the published application blob IDs in this block's operations.
+    pub fn published_application_blob_ids(&self) -> HashSet<BlobId> {
+        let mut blob_ids = HashSet::new();
+        for operation in &self.operations {
+            if let Operation::System(SystemOperation::CreateApplication {
+                application_id, ..
+            }) = operation
+            {
+                blob_ids.insert(BlobId::new(
+                    application_id.application_description_hash,
+                    BlobType::ApplicationDescription,
+                ));
+            }
         }
 
         blob_ids

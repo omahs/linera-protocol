@@ -3,13 +3,11 @@
 
 use linera_base::{
     crypto::CryptoHash,
-    data_types::BlockHeight,
-    identifiers::{BytecodeId, ChainId, MessageId},
+    data_types::{BlockHeight, UserApplicationDescription},
+    identifiers::{BytecodeId, ChainId, MessageId, UserApplicationId},
 };
 
-use super::{
-    ApplicationRegistry, ApplicationRegistryView, UserApplicationDescription, UserApplicationId,
-};
+use super::{ApplicationRegistry, ApplicationRegistryView};
 
 fn message_id(index: u32) -> MessageId {
     MessageId {
@@ -36,7 +34,9 @@ fn app_id(index: u32) -> UserApplicationId {
 fn app_description(index: u32, deps: Vec<u32>) -> UserApplicationDescription {
     UserApplicationDescription {
         bytecode_id: bytecode_id(),
-        creation: message_id(index),
+        creator_chain_id: ChainId::root(0),
+        block_height: BlockHeight::ZERO,
+        block_effect_counter: 0,
         parameters: vec![],
         required_application_ids: deps.into_iter().map(app_id).collect(),
     }

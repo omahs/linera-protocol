@@ -18,9 +18,9 @@ use data_types::{MessageBundle, Origin, PostedMessage};
 use linera_base::{
     crypto::{CryptoError, CryptoHash},
     data_types::{ArithmeticError, BlockHeight, Round, Timestamp},
-    identifiers::{ApplicationId, ChainId},
+    identifiers::{ApplicationId, BlobId, ChainId},
 };
-use linera_execution::ExecutionError;
+use linera_execution::{ExecutionError, SystemExecutionError};
 use linera_views::views::ViewError;
 use rand_distr::WeightedError;
 use thiserror::Error;
@@ -152,13 +152,26 @@ pub enum ChainError {
     },
 }
 
+impl ChainError {
+    pub fn get_blob_not_found_on_read(&self) -> Option<BlobId> {
+        match self {
+            ChainError::ExecutionError(
+                ExecutionError::SystemError(SystemExecutionError::BlobNotFoundOnRead(blob_id)),
+                _,
+            )
+            | ChainError::ExecutionError(
+                ExecutionError::ViewError(ViewError::BlobNotFoundOnRead(blob_id)),
+                _,
+            ) => Some(*blob_id),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Copy, Clone, Debug)]
 pub enum ChainExecutionContext {
     Query,
-    DescribeApplication,
     IncomingBundle(u32),
     Operation(u32),
     Block,
-    #[cfg(with_testing)]
-    ReadBytecodeLocation,
 }

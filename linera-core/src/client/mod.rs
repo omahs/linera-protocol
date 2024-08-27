@@ -29,11 +29,11 @@ use linera_base::{
     crypto::{CryptoHash, KeyPair, PublicKey},
     data_types::{
         Amount, ApplicationPermissions, ArithmeticError, Blob, BlockHeight, Round, Timestamp,
+        UserApplicationDescription,
     },
     ensure,
     identifiers::{
-        Account, ApplicationId, BlobId, BlobType, BytecodeId, ChainId, MessageId, Owner,
-        UserApplicationId,
+        Account, BlobId, BlobType, BytecodeId, ChainId, MessageId, Owner, UserApplicationId,
     },
     ownership::{ChainOwnership, TimeoutConfig},
 };
@@ -49,7 +49,7 @@ use linera_execution::{
     committee::{Committee, Epoch, ValidatorName},
     system::{
         AdminOperation, OpenChainConfig, Recipient, SystemChannel, SystemOperation, UserData,
-        CREATE_APPLICATION_MESSAGE_INDEX, OPEN_CHAIN_MESSAGE_INDEX,
+        OPEN_CHAIN_MESSAGE_INDEX,
     },
     ExecutionError, Message, Operation, Query, Response, SystemExecutionError, SystemMessage,
     SystemQuery, SystemResponse,
@@ -464,6 +464,9 @@ pub enum ChainClientError {
 
     #[error(transparent)]
     CommunicationError(#[from] CommunicationError<NodeError>),
+
+    #[error(transparent)]
+    BcsError(#[from] bcs::Error),
 
     #[error("Internal error within chain client: {0}")]
     InternalError(&'static str),
@@ -1485,14 +1488,8 @@ where
                 if let LocalNodeError::WorkerError(WorkerError::ChainError(chain_error)) =
                     &original_err
                 {
-                    if let ChainError::ExecutionError(
-                        ExecutionError::SystemError(SystemExecutionError::BlobNotFoundOnRead(
-                            blob_id,
-                        )),
-                        _,
-                    ) = &**chain_error
-                    {
-                        self.update_local_node_with_blob_from(*blob_id, remote_node)
+                    if let Some(blob_id) = chain_error.get_blob_not_found_on_read() {
+                        self.update_local_node_with_blob_from(blob_id, remote_node)
                             .await?;
                         continue; // We found the missing blob: retry.
                     }
@@ -1545,7 +1542,10 @@ where
 
     /// Downloads and processes a confirmed block certificate that uses the given blob.
     /// If this succeeds, the blob will be in our storage.
-    async fn receive_certificate_for_blob(&self, blob_id: BlobId) -> Result<(), ChainClientError> {
+    pub async fn receive_certificate_for_blob(
+        &self,
+        blob_id: BlobId,
+    ) -> Result<(), ChainClientError> {
         let validators = self.validator_nodes().await?;
         let mut tasks = FuturesUnordered::new();
         for remote_node in validators {
@@ -1625,12 +1625,8 @@ where
                 .await;
             if let Err(LocalNodeError::WorkerError(WorkerError::ChainError(chain_error))) = &result
             {
-                if let ChainError::ExecutionError(
-                    ExecutionError::SystemError(SystemExecutionError::BlobNotFoundOnRead(blob_id)),
-                    _,
-                ) = &**chain_error
-                {
-                    self.receive_certificate_for_blob(*blob_id).await?;
+                if let Some(blob_id) = chain_error.get_blob_not_found_on_read() {
+                    self.receive_certificate_for_blob(blob_id).await?;
                     continue; // We found the missing blob: retry.
                 }
             }
@@ -2123,22 +2119,6 @@ where
         Ok(())
     }
 
-    /// Requests a `RegisterApplications` message from another chain so the application can be used
-    /// on this one.
-    #[tracing::instrument(level = "trace")]
-    pub async fn request_application(
-        &self,
-        application_id: UserApplicationId,
-        chain_id: Option<ChainId>,
-    ) -> Result<ClientOutcome<Certificate>, ChainClientError> {
-        let chain_id = chain_id.unwrap_or(application_id.creation.chain_id);
-        self.execute_operation(Operation::System(SystemOperation::RequestApplication {
-            application_id,
-            chain_id,
-        }))
-        .await
-    }
-
     /// Sends tokens to a chain.
     #[tracing::instrument(level = "trace", skip(user_data))]
     pub async fn transfer_to_account(
@@ -2479,11 +2459,12 @@ where
             tokio::task::spawn_blocking(move || (contract.compress(), service.compress()))
                 .await
                 .expect("Compression should not panic");
-        let contract_blob = Blob::new_contract_bytecode(compressed_contract);
-        let service_blob = Blob::new_service_bytecode(compressed_service);
+        let contract_blob = Blob::new_contract_bytecode(compressed_contract)?;
+        let service_blob = Blob::new_service_bytecode(compressed_service)?;
 
         let bytecode_id = BytecodeId::new(contract_blob.id().hash, service_blob.id().hash);
-        self.add_pending_blobs([contract_blob, service_blob]).await;
+        self.add_pending_blobs(vec![contract_blob, service_blob])
+            .await;
         self.execute_operation(Operation::System(SystemOperation::PublishBytecode {
             bytecode_id,
         }))
@@ -2497,9 +2478,12 @@ where
         &self,
         bytes: Vec<Vec<u8>>,
     ) -> Result<ClientOutcome<Certificate>, ChainClientError> {
-        let blobs = bytes.into_iter().map(Blob::new_data);
+        let mut blobs = Vec::new();
+        for byte_vec in bytes {
+            blobs.push(Blob::new_data(byte_vec)?);
+        }
         let publish_blob_operations = blobs
-            .clone()
+            .iter()
             .map(|blob| {
                 Operation::System(SystemOperation::PublishDataBlob {
                     blob_hash: blob.id().hash,
@@ -2520,8 +2504,8 @@ where
     }
 
     /// Adds pending blobs
-    pub async fn add_pending_blobs(&self, pending_blobs: impl IntoIterator<Item = Blob>) {
-        for blob in pending_blobs {
+    pub async fn add_pending_blobs(&self, pending_blobs: Vec<Blob>) {
+        for blob in pending_blobs.clone() {
             self.client.local_node.cache_recent_blob(&blob).await;
             self.state_mut().insert_pending_blob(blob);
         }
@@ -2574,28 +2558,25 @@ where
         instantiation_argument: Vec<u8>,
         required_application_ids: Vec<UserApplicationId>,
     ) -> Result<ClientOutcome<(UserApplicationId, Certificate)>, ChainClientError> {
-        self.execute_operation(Operation::System(SystemOperation::CreateApplication {
+        let application_description = UserApplicationDescription {
             bytecode_id,
+            creator_chain_id: self.chain_id,
+            block_height: self.next_block_height(),
+            block_effect_counter: 0,
             parameters,
-            instantiation_argument,
             required_application_ids,
+        };
+        let application_id = UserApplicationId::from(&application_description);
+        let application_blob = Blob::new_application_description(application_description)?;
+
+        self.add_pending_blobs(vec![application_blob]).await;
+        self.execute_operation(Operation::System(SystemOperation::CreateApplication {
+            application_id,
+            bytecode_id,
+            instantiation_argument,
         }))
         .await?
-        .try_map(|certificate| {
-            // The first message of the only operation created the application.
-            let creation = certificate
-                .value()
-                .executed_block()
-                .and_then(|executed_block| {
-                    executed_block.message_id_for_operation(0, CREATE_APPLICATION_MESSAGE_INDEX)
-                })
-                .ok_or_else(|| ChainClientError::InternalError("Failed to create application"))?;
-            let id = ApplicationId {
-                creation,
-                bytecode_id,
-            };
-            Ok((id, certificate))
-        })
+        .try_map(|certificate| Ok((application_id, certificate)))
     }
 
     /// Creates a new committee and starts using it (admin chains only).
