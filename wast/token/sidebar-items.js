@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["Index"],"struct":["F32","F64","Id","ItemRef","LParen","NameAnnotation","RParen","Span"]};

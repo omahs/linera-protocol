@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["Detect","GenerateDwarf"],"fn":["parse_bytes","parse_file","parse_str"],"struct":["Error","Parser"],"type":["Result"]};
