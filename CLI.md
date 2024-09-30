@@ -397,7 +397,7 @@ View or update the resource control policy
 * `--byte-read <BYTE_READ>` — Set the price per byte read
 * `--byte-written <BYTE_WRITTEN>` — Set the price per byte written
 * `--byte-stored <BYTE_STORED>` — Set the price per byte stored
-* `--operation <OPERATION>` — Set the base price of sending a operation from a block..
+* `--operation <OPERATION>` — Set the base price of sending an operation from a block..
 * `--operation-byte <OPERATION_BYTE>` — Set the additional price for each byte in the argument of a user operation
 * `--message <MESSAGE>` — Set the base price of sending a message from a block..
 * `--message-byte <MESSAGE_BYTE>` — Set the additional price for each byte in the argument of a user message
@@ -450,7 +450,7 @@ Create genesis configuration for a Linera deployment. Create initial user chains
 * `--byte-stored-price <BYTE_STORED_PRICE>` — Set the price per byte stored
 
   Default value: `0`
-* `--operation-price <OPERATION_PRICE>` — Set the base price of sending a operation from a block..
+* `--operation-price <OPERATION_PRICE>` — Set the base price of sending an operation from a block..
 
   Default value: `0`
 * `--operation-byte-price <OPERATION_BYTE_PRICE>` — Set the additional price for each byte in the argument of a user operation
